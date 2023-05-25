@@ -2,7 +2,8 @@
 
 file_name=$1
 pretrained_model=$2
-# sberbank-ai/sbert_large_nlu_ru
+# ai-forever/ruBert-base
+# ai-forever/sbert_large_nlu_ru
 # DeepPavlov/rubert-base-cased
 # bert-base-multilingual-cased
 # bert-base-multilingual-uncased

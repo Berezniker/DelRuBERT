@@ -5,16 +5,60 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, f1_score
 import argparse
 import json
 
 
+global_config = {
+    "bert_output_size": 1024,
+    "hidden_size": 16,
+    "num_classes": 1,
+    "hidden_dropout_prob": 0.1
+}
+
+
 def argparser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', "--path-to-model", required=True, type=str)
-    parser.add_argument("--path-to-math-dataset", required=True, type=str)
-    parser.add_argument("--path-to-biology-dataset", required=True, type=str)
+
+    parser.add_argument(
+        '-m', "--path-to-model",
+        required=True,
+        type=str
+    )
+    parser.add_argument(
+        "--use-morph-tokenizer",
+        action="store_true"
+    )
+    parser.add_argument(
+        "--path-to-first-dataset",
+        required=True,
+        type=str
+    )
+    parser.add_argument(
+        "--path-to-second-dataset",
+        required=True,
+        type=str
+    )
+    parser.add_argument(
+        '-lr', "--learning-rate",
+        required=False,
+        default=1e-3,
+        type=float
+    )
+    parser.add_argument(
+        '-e', "--number-of-epochs",
+        required=False,
+        default=100,
+        type=int
+    )
+    parser.add_argument(
+        '-bs', "--batch-size",
+        required=False,
+        default=16,
+        type=int
+    )
+
     return parser.parse_args()
 
 
@@ -53,7 +97,7 @@ class Collator:
 
 def init_layer(layer, initializer_range=0.02, zero_out_bias=True):
     if isinstance(layer, nn.Embedding) or isinstance(layer, nn.Linear):
-        nn.init.trunc_normal_(layer.weight.data, std=initializer_range, a=-2 * initializer_range, b=2 * initializer_range)
+        nn.init.trunc_normal_(layer.weight.data, std=initializer_range, a=-2*initializer_range, b=2*initializer_range)
         if isinstance(layer, nn.Linear):
             layer.bias.data.zero_()
 
@@ -61,7 +105,7 @@ def init_layer(layer, initializer_range=0.02, zero_out_bias=True):
 class BertModel(nn.Module):
     CLS_POSITION = 0
 
-    def __init__(self, bert_backbone, hidden_size, num_classes=1, hidden_dropout_prob=0.):
+    def __init__(self, bert_backbone, bert_output_size=1024, hidden_size=16, num_classes=1, hidden_dropout_prob=0.1):
         super().__init__()
         self._bert_backbone = bert_backbone
 
@@ -70,11 +114,11 @@ class BertModel(nn.Module):
             param.requires_grad = False
 
         self._hidden_size = hidden_size
-        self.linear_1 = nn.Linear(1024, hidden_size)
+        self.linear_1 = nn.Linear(bert_output_size, hidden_size)
         self.linear_2 = nn.Linear(hidden_size, num_classes)
         self.model = nn.Sequential(
             self.linear_1,
-            nn.ReLU(),
+            nn.GELU(),
             nn.Dropout(p=hidden_dropout_prob),
             self.linear_2
         )
@@ -154,7 +198,7 @@ class Trainer:
             return batch_loss / len(dataloader), acc / num_objects, roc_auc_score(labels_lst, pred_lst)
 
 
-def get_dataloader(corpus, targets, tokenizer):
+def get_dataloader(corpus, targets, tokenizer, batch_size=16):
     ds = BertDataset(
         corpus=corpus,
         labels=targets,
@@ -166,8 +210,7 @@ def get_dataloader(corpus, targets, tokenizer):
     dl = DataLoader(
         ds,
         collate_fn=collator,
-        batch_size=16,
-        # shuffle=False
+        batch_size=batch_size,
         shuffle=True
     )
 
@@ -178,26 +221,45 @@ def main():
     args = argparser()
 
     model = AutoModel.from_pretrained(args.path_to_model)
+
     tokenizer = AutoTokenizer.from_pretrained(args.path_to_model)
 
-    with open(args.path_to_math_dataset, mode='r') as f:
-        math_json = json.load(f)
-    with open(args.path_to_biology_dataset, mode='r') as f:
-        biology_json = json.load(f)
+    with open(args.path_to_first_dataset, mode='r') as f:
+        first_json = json.load(f)
+    with open(args.path_to_second_dataset, mode='r') as f:
+        second_json = json.load(f)
 
-    corpus = math_json + biology_json
-    targets = [0.] * len(math_json) + [1.] * len(biology_json)
+    corpus = first_json + second_json
+    targets = [0.] * len(first_json) + [1.] * len(second_json)
     targets = list(map(float, targets))
 
-    dl = get_dataloader(corpus, targets, tokenizer)
+    dl = get_dataloader(
+        corpus,
+        targets,
+        tokenizer,
+        args.batch_size
+    )
 
-    bert_model = BertModel(model, 16)
+    bert_model = BertModel(
+        model,
+        bert_output_size=global_config["bert_output_size"],
+        hidden_size=global_config["hidden_size"],
+        num_classes=global_config["num_classes"],
+        hidden_dropout_prob=global_config["hidden_dropout_prob"]
+    )
 
-    optimizer = torch.optim.AdamW(bert_model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(
+        bert_model.parameters(),
+        lr=args.learning_rate
+    )
 
-    trainer = Trainer(bert_model, optimizer, tokenizer.pad_token_id)
+    trainer = Trainer(
+        bert_model,
+        optimizer,
+        tokenizer.pad_token_id
+    )
 
-    trainer.train(dl, 100)
+    trainer.train(dl, args.number_of_epochs)
 
     return
 
